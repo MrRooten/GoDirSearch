@@ -1,12 +1,13 @@
 package main
 
 import (
+	"flag"
 	"fmt"
-	"strings"
 )
 
 func main() {
-	a := []string{"","string"}
-	fmt.Println(strings.Join(a,"/"))
+	a := flag.String("a","abc","abcd")
+	flag.Parse()
+	fmt.Println(*a)
 }
 

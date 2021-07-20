@@ -22,20 +22,42 @@ const TRUE = "true"
 const FALSE = "false"
 
 var wg *sync.WaitGroup
+type DirQueue []*DirTree
+type HttpHandler func(response *http.Response, text string, context *Context) string
 
+func red(str string) string {
+	return "\033[1;31m"+str+"\033[39m"
+}
+
+func blue(str string) string {
+	return "\033[1;34m"+str+"\033[39m"
+}
+
+func green(str string) string {
+	return "\033[1;32m"+str+"\033[39m"
+}
 func print_usage(help_message string) {
-
+	fmt.Println(help_message)
 }
 func print_error(error_message string,err error) {
-
+	fmt.Println(red("[Error]:")+error_message)
+	fmt.Println("    "+err.Error())
 }
 
 func print_info(info_message string) {
-
+	fmt.Println(green("[Info]:")+info_message)
 }
 
 func print_found(found_message string,response *http.Response) {
-	res := "["+strconv.Itoa(response.StatusCode)+"] " + found_message
+	res := "["+strconv.Itoa(response.StatusCode)+"] "
+	if strconv.Itoa(response.StatusCode)[0] == "4"[0] {
+		res = red(res)
+	} else if (strconv.Itoa(response.StatusCode)[0] == "3"[0]) {
+		res = green(res)
+	} else if (strconv.Itoa(response.StatusCode)[0] == "2"[0]) {
+		res = blue(res)
+	}
+	res += found_message + " ("+blue("size: " + response.Header.Get("Content-Length")) + ")"
 	fmt.Println(res)
 }
 func min(n1 float64, n2 float64) float64 {
@@ -87,15 +109,25 @@ type Context struct {
 	cur_tree                  *DirTree
 	cur_name                  string
 	pool               		  *poollib.GoroutinePool
+	global_context			  *UrlSearchContext
+	key_string                string
 }
 
+type UrlSearchContext struct {
+	handlerLock *sync.Mutex
+	dir_queue *DirQueue
+	dir_queue_save *DirQueue
+	wg *sync.Mutex
+	dummy_tree *DirTree
+	root_node *DirTree
+}
 type DirTree struct {
 	name     string
-	subtrees []DirTree
+	subtrees []*DirTree
 	parent   *DirTree
 }
 
-func (dir *DirTree) AddTree(subdir DirTree) {
+func (dir *DirTree) AddTree(subdir *DirTree) {
 	dir.subtrees = append(dir.subtrees, subdir)
 	dir.subtrees[len(dir.subtrees)-1].parent = dir
 }
@@ -104,7 +136,7 @@ func (dir *DirTree) AddTreeByName(name string) *DirTree {
 	tree := DirTree{}
 	tree.name = name
 	tree.parent = dir
-	dir.subtrees = append(dir.subtrees, tree)
+	dir.subtrees = append(dir.subtrees, &tree)
 	return &tree
 }
 //Return the
@@ -122,20 +154,16 @@ func (dir *DirTree) GetPathStringList() []string {
 	return reverseDirList[1:]
 }
 
-type DirQueue []DirTree
 
-var handlerLock sync.Mutex
 
-type HttpHandler func(response *http.Response, text string, context *Context) string
-
-func SendRequest(url string, cookie *http.Cookie, header *http.Header, handler HttpHandler, context *Context) string {
+func SendRequest(url string, cookie *http.Cookie, header *http.Header, handler HttpHandler, context *Context) (string,error) {
 	//defer wg.Done()
 	client := &http.Client{}
 	request, err := http.NewRequest("GET", url, nil)
 
 	if err != nil {
 		print_error("Can not get a new request",err)
-		return "error"
+		return "",err
 	}
 
 	if cookie != nil {
@@ -149,22 +177,19 @@ func SendRequest(url string, cookie *http.Cookie, header *http.Header, handler H
 	response, err := client.Do(request)
 	if err != nil {
 		print_error("Can not send the request to the server",err)
-		return "error"
+		return "",err
 	}
 
 	text, err := ioutil.ReadAll(response.Body)
 	if err != nil {
 		print_error("Can not read the IO from the response's body",err)
-		return "error"
+		return "",err
 	}
 	//handlerLock.Lock()
 	result := handler(response, string(text), context)
 	//handlerLock.Unlock()
-	return result
+	return result,nil
 }
-
-var dir_queue DirQueue
-var dir_queue_save DirQueue
 
 func ProcHandler(response *http.Response, text string, context *Context) string {
 	//If status code is 429,then decrease the scan rate
@@ -172,11 +197,11 @@ func ProcHandler(response *http.Response, text string, context *Context) string 
 		//Jar all goroutines wait in pool
 	}
 
-	if context.is_404_verify {
-		if response.StatusCode == 404 {
+
+	if response.StatusCode == 404 {
 			return FALSE
 		}
-	}
+
 
 	if context.regexString != "" {
 		matched, err := regexp.Match(context.regexString, []byte(text))
@@ -189,6 +214,11 @@ func ProcHandler(response *http.Response, text string, context *Context) string 
 		}
 	}
 
+	if context.key_string != "" {
+		if strings.Contains(text,context.key_string) {
+			return FALSE
+		}
+	}
 	if context.similarity_level > 0 {
 		difference_ratio := GetDifferenceRatio(text, context.error_page)
 		if difference_ratio >= context.notfound_difference_ratio {
@@ -200,7 +230,7 @@ func ProcHandler(response *http.Response, text string, context *Context) string 
 	found_url := response.Request.URL
 	print_found(found_url.String(),response)
 	add_node := cur_node.AddTreeByName(context.cur_name)
-	dir_queue_save = append(dir_queue_save, *add_node)
+	*context.global_context.dir_queue_save = append(*context.global_context.dir_queue_save, add_node)
 	return TRUE
 }
 
@@ -250,16 +280,21 @@ func S(vargs []interface{}) {
 	SendRequest(url, cookie,header, handler, context)
 }
 
-var dummy_tree = DirTree{}
-var root_node = DirTree{}
-
 //https://baidu.com/ -> https://baidu.com
 
-func MainProcess(url_string string, wordlist string, regexString string, sim_level int, depth int, rate int) {
+func UrlSearch(url_string string, wordlist string, regexString string, sim_level int, depth int, rate int,key_string string) {
 
 	context := Context{}
+	global_context := UrlSearchContext{}
+	global_context.wg = new(sync.Mutex)
+	global_context.dir_queue = new(DirQueue)
+	global_context.dir_queue_save = new(DirQueue)
+	global_context.handlerLock = new(sync.Mutex)
+	global_context.root_node = new(DirTree)
+	global_context.dummy_tree = new(DirTree)
 	//Initialize value
 	context.notfound_difference_ratio = 1.0
+	context.global_context = &global_context
 	url_string = strings.Trim(url_string," ")
 	if strings.HasSuffix(url_string,"/") {
 		url_string = url_string[:len(url_string)-1]
@@ -267,18 +302,26 @@ func MainProcess(url_string string, wordlist string, regexString string, sim_lev
 
 	//Verify the 404 signature is valid or not
 	context.is_404_verify = false
-	if SendRequest(url_string+GenerateRandomString(16), nil, nil, Verify404Vaild, nil) == "true" {
+	res,err := SendRequest(url_string+"/"+GenerateRandomString(16), nil, nil, Verify404Vaild, nil)
+	if err != nil {
+		print_error("Can not get the not found page",err)
+		return 
+	}
+	if res == "true"{
 		context.is_404_verify = true
 	}
-
+	context.key_string = key_string
 	context.regexString = regexString
 	context.similarity_level = sim_level
 
 	//Get the two non-exist page's difference ratio
-	page404_1 := SendRequest(url_string+"/"+GenerateRandomString(16), nil, nil, GetHtml, nil)
+	page404_1,err := SendRequest(url_string+"/"+GenerateRandomString(16), nil, nil, GetHtml, nil)
 	context.error_page = page404_1
-	for i := 0; i < sim_level*5; i++ {
-		page404_2 := SendRequest(url_string+ "/" + GenerateRandomString(16), nil, nil, GetHtml, nil)
+	for i := 0; i < sim_level*3; i++ {
+		page404_2,err := SendRequest(url_string+ "/" + GenerateRandomString(16), nil, nil, GetHtml, nil)
+		if err != nil {
+			print_error("Can not get the not found page",err)
+		}
 		context.notfound_difference_ratio = min(GetDifferenceRatio(page404_1, page404_2), context.notfound_difference_ratio)
 	}
 
@@ -302,26 +345,23 @@ func MainProcess(url_string string, wordlist string, regexString string, sim_lev
 	pool.NewGoroutinePool(rate)
 
 	//Build the directory tree
-	root_node.name = "/"
-	root_node.parent = &dummy_tree
-	dummy_tree.AddTree(root_node)
+	global_context.root_node.name = "/"
+	global_context.root_node.parent = global_context.dummy_tree
+	global_context.dummy_tree.AddTree(global_context.root_node)
 
-	dir_queue = DirQueue{}
+	global_context.dir_queue = new(DirQueue)
 
-	dir_queue_save = DirQueue{}
+	global_context.dir_queue_save = new(DirQueue)
 
 	dp := 0
 
-	for i := 0; i < len(dummy_tree.subtrees); i++ {
-		dir_queue = append(dir_queue, dummy_tree.subtrees[i])
-	}
+	*global_context.dir_queue = append(*global_context.dir_queue,global_context.root_node)
+	for len(*global_context.dir_queue) != 0 && dp != depth {
+		cur_node := (*global_context.dir_queue)[0]
+		*global_context.dir_queue = (*global_context.dir_queue)[1:]
+		context.cur_tree = cur_node
 
-	for len(dir_queue) != 0 && dp != depth {
-		cur_node := dir_queue[0]
-		dir_queue = dir_queue[1:]
-
-		for i_dir_name := range filename_list {
-			context.cur_tree = &cur_node
+		for i_dir_name:=0;i_dir_name<len(filename_list);i_dir_name++ {
 			context.cur_name = filename_list[i_dir_name]
 			var vargs []interface{}
 			var ProcFunction HttpHandler
@@ -331,27 +371,55 @@ func MainProcess(url_string string, wordlist string, regexString string, sim_lev
 			pool.RunTask(S,vargs)
 		}
 		pool.WaitTask()
-		if len(dir_queue) == 0 {
+		if len(*global_context.dir_queue) == 0 {
 			dp += 1
-			dir_queue, dir_queue_save = dir_queue_save, dir_queue
+			global_context.dir_queue, global_context.dir_queue_save = global_context.dir_queue_save, global_context.dir_queue
 		}
 	}
 }
 
 func main() {
 	url_string := flag.String("u","","Set the url you need to buster")
-	if *url_string == "" {
-		print_usage("Must set the url")
-		return
-	}
+
+	url_file := flag.String("url_file","","Url file")
 	wordlist := flag.String("w","","The wordlst")
-	if *wordlist == "" {
-		print_usage("Must set the wordlist")
-		return
-	}
+
 	sim_level := flag.Int("s",1,"Similarity of error page leve(default 1)")
 	regex_string := flag.String("r","","Regex String of Error page(default \"\")")
 	depth := flag.Int("d",1,"How depth of url need to search(default 1)")
 	rate := flag.Int("rate",5,"how fast the search(default 5)")
-	MainProcess(*url_string,*wordlist,*regex_string,*sim_level,*depth,*rate)
+	key_string := flag.String("key_string","","")
+	flag.Parse()
+	if *url_string == "" && *url_file == "" {
+		print_usage("Must set the url")
+		return
+	}
+
+	if *wordlist == "" {
+		print_usage("Must set the wordlist")
+		return
+	}
+	if *url_string != "" {
+		UrlSearch(*url_string, *wordlist, *regex_string, *sim_level, *depth, *rate,*key_string)
+	} else if *url_file !=""{
+		urllist_file, err := os.Open(*url_file)
+		if err != nil {
+			print_error("Read file error",err)
+		}
+
+		scanner := bufio.NewScanner(urllist_file)
+		scanner.Split(bufio.ScanLines)
+
+		var url_list []string
+		for scanner.Scan() {
+			url_list = append(url_list, scanner.Text())
+		}
+		urllist_file.Close()
+
+		for i:=0;i < len(url_list);i++ {
+			UrlSearch(url_list[i],*wordlist,*regex_string,*sim_level,*depth,*rate,*key_string)
+		}
+	}
+
+	//UrlSearch("http://zhihu.com",".\\test_wordlist.txt","",1,1,1)
 }
