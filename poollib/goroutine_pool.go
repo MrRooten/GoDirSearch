@@ -26,17 +26,18 @@ func (pool *GoroutinePool) NewGoroutinePool(num int) {
 }
 
 func (pool *GoroutinePool) RunTask(function HandlerFunction, vargs []interface{}) {
-	pool.wg.Add(1)
+
 
 	<-pool.request_goroutine_ch
+	pool.wg.Add(1)
 	pool.size += 1
 
-	go func () {
+	func () {
 		function(vargs)
+	}()
 		pool.wg.Done()
 		pool.size -= 1
 		pool.request_goroutine_ch <- true
-	}()
 }
 
 func (pool *GoroutinePool) WaitTask() {
