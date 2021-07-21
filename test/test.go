@@ -1,13 +1,19 @@
 package main
 
 import (
-	"flag"
 	"fmt"
+	"sync"
 )
 
 func main() {
-	a := flag.String("a","abc","abcd")
-	flag.Parse()
-	fmt.Println(*a)
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	i := new(int32)
+	go func() {
+		*i = 3
+		wg.Done()
+	}()
+	wg.Wait()
+	fmt.Println(*i)
 }
 

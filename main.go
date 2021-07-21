@@ -111,13 +111,13 @@ type Context struct {
 	pool               		  *poollib.GoroutinePool
 	global_context			  *UrlSearchContext
 	key_string                string
+	tree_lock				  *sync.Mutex
 }
 
 type UrlSearchContext struct {
 	handlerLock *sync.Mutex
 	dir_queue *DirQueue
 	dir_queue_save *DirQueue
-	wg *sync.Mutex
 	dummy_tree *DirTree
 	root_node *DirTree
 }
@@ -156,7 +156,7 @@ func (dir *DirTree) GetPathStringList() []string {
 
 
 
-func SendRequest(url string, cookie *http.Cookie, header *http.Header, handler HttpHandler, context *Context) (string,error) {
+func SendRequest(url string, cookie *http.Cookie, header *http.Header, handler HttpHandler, context Context) (string,error) {
 	//defer wg.Done()
 	client := &http.Client{}
 	request, err := http.NewRequest("GET", url, nil)
@@ -185,9 +185,9 @@ func SendRequest(url string, cookie *http.Cookie, header *http.Header, handler H
 		print_error("Can not read the IO from the response's body",err)
 		return "",err
 	}
-	//handlerLock.Lock()
-	result := handler(response, string(text), context)
-	//handlerLock.Unlock()
+	context.global_context.handlerLock.Lock()
+	result := handler(response, string(text), &context)
+	context.global_context.handlerLock.Unlock()
 	return result,nil
 }
 
@@ -225,7 +225,6 @@ func ProcHandler(response *http.Response, text string, context *Context) string 
 			return FALSE
 		}
 	}
-
 	cur_node := context.cur_tree
 	found_url := response.Request.URL
 	print_found(found_url.String(),response)
@@ -254,7 +253,7 @@ func S(vargs []interface{}) {
 	var cookie *http.Cookie
 	var header *http.Header
 	var handler HttpHandler
-	var context *Context
+	var context Context
 
 	for i,_:=range vargs {
 		if (i == 0) {
@@ -274,27 +273,32 @@ func S(vargs []interface{}) {
 		} else if (i == 3) {
 			handler = vargs[i].(HttpHandler)
 		} else if (i == 4) {
-			context = vargs[i].(*Context)
+			context = vargs[i].(Context)
 		}
 	}
 	SendRequest(url, cookie,header, handler, context)
 }
 
-//https://baidu.com/ -> https://baidu.com
+func deepCopy(s string) string {
+	var sb strings.Builder
+	sb.WriteString(s)
+	return sb.String()
+}
 
 func UrlSearch(url_string string, wordlist string, regexString string, sim_level int, depth int, rate int,key_string string) {
 
 	context := Context{}
 	global_context := UrlSearchContext{}
-	global_context.wg = new(sync.Mutex)
+	//global_context.wg = new(sync.Mutex)
 	global_context.dir_queue = new(DirQueue)
 	global_context.dir_queue_save = new(DirQueue)
-	global_context.handlerLock = new(sync.Mutex)
+	global_context.handlerLock = &sync.Mutex{}
 	global_context.root_node = new(DirTree)
 	global_context.dummy_tree = new(DirTree)
 	//Initialize value
 	context.notfound_difference_ratio = 1.0
 	context.global_context = &global_context
+	context.tree_lock = new(sync.Mutex)
 	url_string = strings.Trim(url_string," ")
 	if strings.HasSuffix(url_string,"/") {
 		url_string = url_string[:len(url_string)-1]
@@ -302,7 +306,7 @@ func UrlSearch(url_string string, wordlist string, regexString string, sim_level
 
 	//Verify the 404 signature is valid or not
 	context.is_404_verify = false
-	res,err := SendRequest(url_string+"/"+GenerateRandomString(16), nil, nil, Verify404Vaild, nil)
+	res,err := SendRequest(url_string+"/"+GenerateRandomString(16), nil, nil, Verify404Vaild, context)
 	if err != nil {
 		print_error("Can not get the not found page",err)
 		return 
@@ -315,10 +319,10 @@ func UrlSearch(url_string string, wordlist string, regexString string, sim_level
 	context.similarity_level = sim_level
 
 	//Get the two non-exist page's difference ratio
-	page404_1,err := SendRequest(url_string+"/"+GenerateRandomString(16), nil, nil, GetHtml, nil)
+	page404_1,err := SendRequest(url_string+"/"+GenerateRandomString(16), nil, nil, GetHtml, context)
 	context.error_page = page404_1
 	for i := 0; i < sim_level*3; i++ {
-		page404_2,err := SendRequest(url_string+ "/" + GenerateRandomString(16), nil, nil, GetHtml, nil)
+		page404_2,err := SendRequest(url_string+ "/" + GenerateRandomString(16), nil, nil, GetHtml, context,)
 		if err != nil {
 			print_error("Can not get the not found page",err)
 		}
@@ -360,15 +364,19 @@ func UrlSearch(url_string string, wordlist string, regexString string, sim_level
 		cur_node := (*global_context.dir_queue)[0]
 		*global_context.dir_queue = (*global_context.dir_queue)[1:]
 		context.cur_tree = cur_node
-
+		locker := sync.Mutex{}
 		for i_dir_name:=0;i_dir_name<len(filename_list);i_dir_name++ {
+			locker.Lock()
 			context.cur_name = filename_list[i_dir_name]
 			var vargs []interface{}
 			var ProcFunction HttpHandler
 			ProcFunction = ProcHandler
 			request_url_string := url_string + "/" +strings.Join(append(cur_node.GetPathStringList()[:],filename_list[i_dir_name]),"/")
-			vargs = append(vargs, request_url_string, nil, nil, ProcFunction, &context)
+			new_url_string := deepCopy(request_url_string)
+			locker.Unlock()
+			vargs = append(vargs, new_url_string, nil, nil, ProcFunction, context)
 			pool.RunTask(S,vargs)
+
 		}
 		pool.WaitTask()
 		if len(*global_context.dir_queue) == 0 {
