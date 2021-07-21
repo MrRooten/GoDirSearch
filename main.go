@@ -48,8 +48,9 @@ func print_info(info_message string) {
 	fmt.Println(green("[Info]:")+info_message)
 }
 
-func print_found(found_message string,response *http.Response) {
+func print_found(found_message string,response *http.Response,size int) {
 	res := "["+strconv.Itoa(response.StatusCode)+"] "
+
 	if strconv.Itoa(response.StatusCode)[0] == "4"[0] {
 		res = red(res)
 	} else if (strconv.Itoa(response.StatusCode)[0] == "3"[0]) {
@@ -57,7 +58,9 @@ func print_found(found_message string,response *http.Response) {
 	} else if (strconv.Itoa(response.StatusCode)[0] == "2"[0]) {
 		res = blue(res)
 	}
-	res += found_message + " ("+blue("size: " + response.Header.Get("Content-Length")) + ")"
+
+
+	res =  found_message + "\n"+ blue("  Information: ") + res + blue(strconv.Itoa(size)) + red(" bytes ")
 	fmt.Println(res)
 }
 func min(n1 float64, n2 float64) float64 {
@@ -115,16 +118,18 @@ type Context struct {
 }
 
 type UrlSearchContext struct {
-	handlerLock *sync.Mutex
-	dir_queue *DirQueue
-	dir_queue_save *DirQueue
-	dummy_tree *DirTree
-	root_node *DirTree
+	handlerLock 		      *sync.Mutex
+	dir_queue 				  *DirQueue
+	dir_queue_save 			  *DirQueue
+	dummy_tree 				  *DirTree
+	root_node 				  *DirTree
+	string_set 				  map[string]bool
 }
 type DirTree struct {
 	name     string
 	subtrees []*DirTree
 	parent   *DirTree
+	query    string
 }
 
 func (dir *DirTree) AddTree(subdir *DirTree) {
@@ -157,8 +162,13 @@ func (dir *DirTree) GetPathStringList() []string {
 
 
 func SendRequest(url string, cookie *http.Cookie, header *http.Header, handler HttpHandler, context Context) (string,error) {
+
 	//defer wg.Done()
-	client := &http.Client{}
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	request, err := http.NewRequest("GET", url, nil)
 
 	if err != nil {
@@ -200,8 +210,7 @@ func ProcHandler(response *http.Response, text string, context *Context) string 
 
 	if response.StatusCode == 404 {
 			return FALSE
-		}
-
+	}
 
 	if context.regexString != "" {
 		matched, err := regexp.Match(context.regexString, []byte(text))
@@ -225,11 +234,43 @@ func ProcHandler(response *http.Response, text string, context *Context) string 
 			return FALSE
 		}
 	}
+	//If the response status is 3xx and the location path is in context.global_context.string_set then return false
+	//Else stores in the strings_set and save to the dir tree
+	if strconv.Itoa(response.StatusCode)[0] == "3"[0] {
+		location := response.Header.Get("location")
+		if context.global_context.string_set[location] == true {
+			return FALSE
+		} else {
+			//This path is different with the default type
+			//So this dir add type has it's own way
+			context.global_context.string_set[location] = true
+		}
+	}
+
+	//Some page must pass some args to get the page
+	//So I use a new way to save to the dir tree
+
+	//End of new way
 	cur_node := context.cur_tree
 	found_url := response.Request.URL
-	print_found(found_url.String(),response)
-	add_node := cur_node.AddTreeByName(context.cur_name)
-	*context.global_context.dir_queue_save = append(*context.global_context.dir_queue_save, add_node)
+	var add_node *DirTree
+	if found_url.RawQuery == "" {
+
+		print_found(found_url.String(), response, len(text))
+		add_node = cur_node.AddTreeByName(context.cur_name)
+		*context.global_context.dir_queue_save = append(*context.global_context.dir_queue_save, add_node)
+	} else {
+		path := found_url.Path
+		//If the url is like http://google.com not like http://google.com/
+		if path == "" {
+			path = "/"
+		}
+
+		filename := path[strings.LastIndex(path,"/")+1:]
+		add_node = cur_node.AddTreeByName(filename)
+		add_node.query = found_url.RawQuery
+		print_found(found_url.String(),response, len(text))
+	}
 	return TRUE
 }
 
@@ -287,15 +328,16 @@ func deepCopy(s string) string {
 
 func UrlSearch(url_string string, wordlist string, regexString string, sim_level int, depth int, rate int,key_string string) {
 
-	context := Context{}
+	//Inialize Every UrlSearch's Vaule
 	global_context := UrlSearchContext{}
-	//global_context.wg = new(sync.Mutex)
 	global_context.dir_queue = new(DirQueue)
 	global_context.dir_queue_save = new(DirQueue)
 	global_context.handlerLock = &sync.Mutex{}
 	global_context.root_node = new(DirTree)
 	global_context.dummy_tree = new(DirTree)
-	//Initialize value
+	global_context.string_set = make(map[string]bool)
+	//Initialize context value
+	context := Context{}
 	context.notfound_difference_ratio = 1.0
 	context.global_context = &global_context
 	context.tree_lock = new(sync.Mutex)

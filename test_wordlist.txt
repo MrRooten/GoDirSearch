@@ -1,6 +1,4 @@
-abc
-123
-index.php
-index.html
 test
-aksdjfksdf
+index.php?abc=123
+index.html
+abc

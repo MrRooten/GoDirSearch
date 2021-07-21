@@ -32,7 +32,7 @@ func (pool *GoroutinePool) RunTask(function HandlerFunction, vargs []interface{}
 	pool.wg.Add(1)
 	pool.size += 1
 
-	go func () {
+	func () {
 		function(vargs)
 		defer func() {
 			pool.wg.Done()
