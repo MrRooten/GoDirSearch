@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"go_dir_search/poollib"
@@ -23,7 +24,7 @@ const FALSE = "false"
 
 var wg *sync.WaitGroup
 type DirQueue []*DirTree
-type HttpHandler func(response *http.Response, text string, context *Context) string
+type HttpHandler func(response *http.Response, text string, context *Context) (string,error)
 
 func red(str string) string {
 	return "\033[1;31m"+str+"\033[39m"
@@ -63,6 +64,9 @@ func print_found(found_message string,response *http.Response,size int) {
 	res :=  found_message
 	res += "\n  " + blue("Status Code: ") + status_code
 	res += "\n  " + blue("Size: ") + green(strconv.Itoa(size)) + red(" bytes")
+	if response.Header.Get("Location") != "" {
+		res += "\n  " + blue("Redirect to -> ") + response.Header.Get("Location")
+	}
 	fmt.Println(res)
 }
 func min(n1 float64, n2 float64) float64 {
@@ -174,14 +178,18 @@ func SendRequest(url string, cookie *http.Cookie, header *http.Header, handler H
 		},
 	}
 	request, err := http.NewRequest("GET", url, nil)
-	if context.global_context.last_send_status != nil {
-		//If last request is failed, identify the error type then process it
-
-	}
 	if err != nil {
 		print_error("Can not get a new request",err)
 		return "",err
 	}
+	if context.global_context.last_send_status != nil {
+		//If last request is failed, identify the error type then process it
+
+
+		//Recover the last request status
+		context.global_context.last_send_status = nil
+	}
+
 
 	if cookie != nil {
 		request.AddCookie(cookie)
@@ -203,42 +211,47 @@ func SendRequest(url string, cookie *http.Cookie, header *http.Header, handler H
 		return "",err
 	}
 	context.global_context.handlerLock.Lock()
-	result := handler(response, string(text), &context)
+	result,err := handler(response, string(text), &context)
+	if result == FALSE {
+		print_error("Error happened:",err)
+	}
 	context.global_context.handlerLock.Unlock()
 	return result,nil
 }
 
-func ProcHandler(response *http.Response, text string, context *Context) string {
+func ProcHandler(response *http.Response, text string, context *Context) (string,error) {
 	//If status code is 429,then decrease the scan rate
 	if response.StatusCode == 429 {
 		//Jar all goroutines wait in pool
+		return TRUE,errors.New("Too many request")
 	}
 
 
 	if response.StatusCode == 404 {
-			return FALSE
+		return TRUE,errors.New("Not found page")
 	}
+
 
 	if context.regexString != "" {
 		matched, err := regexp.Match(context.regexString, []byte(text))
 		if err != nil {
-
+			return FALSE,errors.New("Regex string have error:" + err.Error())
 		}
 
 		if matched {
-			return FALSE
+			return FALSE, errors.New("Regex not found page")
 		}
 	}
 
 	if context.key_string != "" {
 		if strings.Contains(text,context.key_string) {
-			return FALSE
+			return TRUE,errors.New("Key string not found page")
 		}
 	}
 	if context.similarity_level > 0 {
 		difference_ratio := GetDifferenceRatio(text, context.error_page)
 		if difference_ratio >= context.notfound_difference_ratio {
-			return FALSE
+			return TRUE,errors.New("Similarity with error page")
 		}
 	}
 	//If the response status is 3xx and the location path is in context.global_context.string_set then return false
@@ -246,7 +259,7 @@ func ProcHandler(response *http.Response, text string, context *Context) string 
 	if strconv.Itoa(response.StatusCode)[0] == "3"[0] {
 		location := response.Header.Get("location")
 		if context.global_context.string_set[location] == true {
-			return FALSE
+			return TRUE,errors.New("Too many redirect to this url")
 		} else {
 			//This path is different with the default type
 			//So this dir add type has it's own way
@@ -278,21 +291,21 @@ func ProcHandler(response *http.Response, text string, context *Context) string 
 		add_node.query = found_url.RawQuery
 		print_found(found_url.String(),response, len(text))
 	}
-	return TRUE
+	return TRUE,nil
 }
 
 //SendRequest's callback function that verify the 404 status code is vaild for not found page or not
-func Verify404Vaild(response *http.Response, text string, context *Context) string {
+func Verify404Vaild(response *http.Response, text string, context *Context) (string,error) {
 	if response.StatusCode == 404 {
-		return TRUE
+		return TRUE,nil
 	}
 
-	return FALSE
+	return FALSE,nil
 }
 
 //SendRequest's callback function that get the html text as string
-func GetHtml(response *http.Response, text string, context *Context) string {
-	return text
+func GetHtml(response *http.Response, text string, context *Context) (string,error) {
+	return text,nil
 }
 
 
