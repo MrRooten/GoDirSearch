@@ -42,7 +42,9 @@ func print_usage(help_message string) {
 }
 func print_error(error_message string,err error) {
 	fmt.Println(red("[Error]:")+error_message)
-	fmt.Println("    "+err.Error())
+	if err != nil {
+		fmt.Println("    " + err.Error())
+	}
 }
 
 func print_info(info_message string) {
@@ -297,10 +299,11 @@ func ProcHandler(response *http.Response, text string, context *Context) (string
 //SendRequest's callback function that verify the 404 status code is vaild for not found page or not
 func Verify404Vaild(response *http.Response, text string, context *Context) (string,error) {
 	if response.StatusCode == 404 {
+		context.is_404_verify = true
 		return TRUE,nil
 	}
-
-	return FALSE,nil
+	context.is_404_verify = false
+	return TRUE,nil
 }
 
 //SendRequest's callback function that get the html text as string
@@ -376,14 +379,12 @@ func UrlSearch(url_string string, wordlist string, regexString string, sim_level
 
 	//Verify the 404 signature is valid or not
 	context.is_404_verify = false
-	res,err := SendRequest(url_string+"/"+GenerateRandomString(16), nil, nil, Verify404Vaild, context)
+	_,err := SendRequest(url_string+"/"+GenerateRandomString(16), nil, nil, Verify404Vaild, context)
 	if err != nil {
 		print_error("Can not get the not found page",err)
 		return 
 	}
-	if res == "true"{
-		context.is_404_verify = true
-	}
+
 	context.key_string = key_string
 	context.regexString = regexString
 	context.similarity_level = sim_level
