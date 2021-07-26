@@ -126,6 +126,8 @@ type UrlSearchContext struct {
 	dummy_tree 				  *DirTree
 	root_node 				  *DirTree
 	string_set 				  map[string]bool
+	send_lock				  *sync.Mutex
+	last_send_status		  error
 }
 type DirTree struct {
 	name     string
@@ -165,14 +167,17 @@ func (dir *DirTree) GetPathStringList() []string {
 
 func SendRequest(url string, cookie *http.Cookie, header *http.Header, handler HttpHandler, context Context) (string,error) {
 
-	//defer wg.Done()
+	context.global_context.send_lock.Lock()
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
 	request, err := http.NewRequest("GET", url, nil)
+	if context.global_context.last_send_status != nil {
+		//If last request is failed, identify the error type then process it
 
+	}
 	if err != nil {
 		print_error("Can not get a new request",err)
 		return "",err
@@ -185,11 +190,10 @@ func SendRequest(url string, cookie *http.Cookie, header *http.Header, handler H
 	if header != nil {
 		request.Header = *header
 	}
-
+	context.global_context.send_lock.Unlock()
 	response, err := client.Do(request)
 	if err != nil {
 		print_error("Can not send the request to the server",err)
-		response.Body.Close()
 		return "",err
 	}
 
@@ -320,7 +324,13 @@ func S(vargs []interface{}) {
 			context = vargs[i].(Context)
 		}
 	}
-	SendRequest(url, cookie,header, handler, context)
+	_,err := SendRequest(url, cookie,header, handler, context)
+
+	if err != nil {
+		context.global_context.send_lock.Lock()
+		context.global_context.last_send_status = err
+		context.global_context.send_lock.Unlock()
+	}
 }
 
 func deepCopy(s string) string {
@@ -339,6 +349,8 @@ func UrlSearch(url_string string, wordlist string, regexString string, sim_level
 	global_context.root_node = new(DirTree)
 	global_context.dummy_tree = new(DirTree)
 	global_context.string_set = make(map[string]bool)
+	global_context.last_send_status = nil
+	global_context.send_lock = &sync.Mutex{}
 	//Initialize context value
 	context := Context{}
 	context.notfound_difference_ratio = 1.0
