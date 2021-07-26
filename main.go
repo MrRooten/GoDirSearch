@@ -49,18 +49,20 @@ func print_info(info_message string) {
 }
 
 func print_found(found_message string,response *http.Response,size int) {
-	res := "["+strconv.Itoa(response.StatusCode)+"] "
+	status_code := "["+strconv.Itoa(response.StatusCode)+"] "
 
 	if strconv.Itoa(response.StatusCode)[0] == "4"[0] {
-		res = red(res)
+		status_code = red(status_code)
 	} else if (strconv.Itoa(response.StatusCode)[0] == "3"[0]) {
-		res = green(res)
+		status_code = green(status_code)
 	} else if (strconv.Itoa(response.StatusCode)[0] == "2"[0]) {
-		res = blue(res)
+		status_code = blue(status_code)
 	}
 
 
-	res =  found_message + "\n"+ blue("  Information: ") + res + blue(strconv.Itoa(size)) + red(" bytes ")
+	res :=  found_message
+	res += "\n  " + blue("Status Code: ") + status_code
+	res += "\n  " + blue("Size: ") + green(strconv.Itoa(size)) + red(" bytes")
 	fmt.Println(res)
 }
 func min(n1 float64, n2 float64) float64 {
@@ -187,6 +189,7 @@ func SendRequest(url string, cookie *http.Cookie, header *http.Header, handler H
 	response, err := client.Do(request)
 	if err != nil {
 		print_error("Can not send the request to the server",err)
+		response.Body.Close()
 		return "",err
 	}
 

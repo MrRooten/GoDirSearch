@@ -2,3 +2,4 @@ test
 index.php?abc=123
 index.html
 abc
+index
