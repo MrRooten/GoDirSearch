@@ -204,14 +204,7 @@ func SendRequest(url string, cookie *http.Cookie, header *http.Header, handler H
 	response, err := client.Do(request)
 	if err != nil {
 		print_error("Can not send the request to the server",err)
-		if is_error_request(err) {
-			context.global_context.cur_count_error += 1
-		}
 
-		if context.global_context.cur_count_error > context.global_context.count_error {
-			context.global_context.quit = true
-			return FALSE,err
-		}
 		return "",err
 	}
 
@@ -354,12 +347,20 @@ func S(vargs []interface{}) {
 		}
 	}
 	_,err := SendRequest(url, cookie,header, handler, context)
-
+	context.global_context.send_lock.Lock()
 	if err != nil {
-		context.global_context.send_lock.Lock()
 		context.global_context.last_send_status = err
-		context.global_context.send_lock.Unlock()
+		if is_error_request(err) {
+			context.global_context.cur_count_error += 1
+		}
+
+		if context.global_context.cur_count_error > context.global_context.count_error {
+			context.global_context.quit = true
+		}
+	} else {
+		context.global_context.cur_count_error = 0
 	}
+	context.global_context.send_lock.Unlock()
 }
 
 func deepCopy(s string) string {
