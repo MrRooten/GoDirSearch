@@ -6,7 +6,9 @@ import (
 	"flag"
 	"fmt"
 	"github.com/cheggaaa/pb/v3"
+	"github.com/pmezard/go-difflib/difflib"
 	"go_dir_search/poollib"
+	"io"
 	"io/ioutil"
 	"math/rand"
 	"net/http"
@@ -16,8 +18,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/pmezard/go-difflib/difflib"
 )
 
 const TRUE = "true"
@@ -70,6 +70,8 @@ func print_found(found_message string,response *http.Response,size int) {
 	if response.Header.Get("Location") != "" {
 		res += "\n  " + blue("Redirect to -> ") + response.Header.Get("Location")
 	}
+
+	res = "\n" + res
 	fmt.Println(res)
 }
 func min(n1 float64, n2 float64) float64 {
@@ -187,6 +189,7 @@ func SendRequest(url string, cookie *http.Cookie, header *http.Header, handler H
 		Timeout: timeout,
 	}
 	request, err := http.NewRequest("GET", url, nil)
+	request.Header.Add("Accept-Encoding", "identity")
 	if err != nil {
 		print_error("Can not get a new request",err)
 		return "",err
@@ -207,8 +210,8 @@ func SendRequest(url string, cookie *http.Cookie, header *http.Header, handler H
 
 		return "",err
 	}
-
-	text, err := ioutil.ReadAll(response.Body)
+	limit_reader := io.LimitReader(response.Body,1024*1024)
+	text,err := ioutil.ReadAll(limit_reader)
 	if err != nil {
 		print_error("Can not read the IO from the response's body",err)
 		return "",err
@@ -312,7 +315,7 @@ func GetHtml(response *http.Response, text string, context *Context) (string,err
 	return text,nil
 }
 func is_error_request(err error) bool {
-	if strings.Contains(err.Error(),"EOF") {
+	if err == io.EOF {
 		return true
 	}
 	return false
@@ -389,6 +392,8 @@ func UrlSearch(url_string string, wordlist string, regexString string, sim_level
 	context.global_context = &global_context
 	context.tree_lock = new(sync.Mutex)
 	url_string = strings.Trim(url_string," ")
+
+	//http://test.com/ -> http://test.com
 	if strings.HasSuffix(url_string,"/") {
 		url_string = url_string[:len(url_string)-1]
 	}
@@ -440,10 +445,11 @@ func UrlSearch(url_string string, wordlist string, regexString string, sim_level
 	global_context.root_node.parent = global_context.dummy_tree
 	global_context.dummy_tree.AddTree(global_context.root_node)
 
+	//Queue for wide first search in tree.Two queues are for know the depth
 	global_context.dir_queue = new(DirQueue)
-
 	global_context.dir_queue_save = new(DirQueue)
 
+	//The current search depth
 	dp := 0
 
 	*global_context.dir_queue = append(*global_context.dir_queue,global_context.root_node)
@@ -453,6 +459,8 @@ func UrlSearch(url_string string, wordlist string, regexString string, sim_level
 		context.cur_tree = cur_node
 		locker := sync.Mutex{}
 		bar := pb.StartNew(len(filename_list))
+
+		//last_time := time.Now()
 		for i_dir_name:=0;i_dir_name<len(filename_list);i_dir_name++ {
 			locker.Lock()
 			context.cur_name = filename_list[i_dir_name]
@@ -463,14 +471,17 @@ func UrlSearch(url_string string, wordlist string, regexString string, sim_level
 			new_url_string := deepCopy(request_url_string)
 			locker.Unlock()
 			vargs = append(vargs, new_url_string, nil, nil, ProcFunction, context)
-			bar.Increment()
+			//ptimes :=  (int64(time.Millisecond)* 1000)/( time.Now().UnixNano() - last_time.UnixNano())
+			//last_time = time.Now()
+			bar.Add(1)
 			pool.RunTask(S,vargs)
-
+			//fmt.Printf(blue("\r  (%d/%d) ")+green("%d ")+red("p/s"), i_dir_name,len(filename_list),ptimes)
 			if (global_context.quit) {
 				print_info("Too many error requests.Stop the requests' sequence")
 				//pool.WaitTask()
 				return
 			}
+
 		}
 		bar.Finish()
 		pool.WaitTask()
