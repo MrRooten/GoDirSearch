@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/cheggaaa/pb/v3"
 	"go_dir_search/poollib"
 	"io/ioutil"
 	"math/rand"
@@ -436,6 +437,7 @@ func UrlSearch(url_string string, wordlist string, regexString string, sim_level
 		*global_context.dir_queue = (*global_context.dir_queue)[1:]
 		context.cur_tree = cur_node
 		locker := sync.Mutex{}
+		bar := pb.StartNew(len(filename_list))
 		for i_dir_name:=0;i_dir_name<len(filename_list);i_dir_name++ {
 			locker.Lock()
 			context.cur_name = filename_list[i_dir_name]
@@ -446,9 +448,10 @@ func UrlSearch(url_string string, wordlist string, regexString string, sim_level
 			new_url_string := deepCopy(request_url_string)
 			locker.Unlock()
 			vargs = append(vargs, new_url_string, nil, nil, ProcFunction, context)
+			bar.Increment()
 			pool.RunTask(S,vargs)
-
 		}
+		bar.Finish()
 		pool.WaitTask()
 		if len(*global_context.dir_queue) == 0 {
 			dp += 1
