@@ -135,6 +135,10 @@ type UrlSearchContext struct {
 	string_set 				  map[string]bool
 	send_lock				  *sync.Mutex
 	last_send_status		  error
+	cur_count_error			  int
+	count_error			      int
+	time_out                  int
+	quit  				      bool //Set quit flag
 }
 type DirTree struct {
 	name     string
@@ -185,13 +189,6 @@ func SendRequest(url string, cookie *http.Cookie, header *http.Header, handler H
 		print_error("Can not get a new request",err)
 		return "",err
 	}
-	if context.global_context.last_send_status != nil {
-		//If last request is failed, identify the error type then process it
-
-
-		//Recover the last request status
-		context.global_context.last_send_status = nil
-	}
 
 
 	if cookie != nil {
@@ -205,6 +202,14 @@ func SendRequest(url string, cookie *http.Cookie, header *http.Header, handler H
 	response, err := client.Do(request)
 	if err != nil {
 		print_error("Can not send the request to the server",err)
+		if is_error_request(err) {
+			context.global_context.cur_count_error += 1
+		}
+
+		if context.global_context.cur_count_error > context.global_context.count_error {
+			context.global_context.quit = true
+			return FALSE,err
+		}
 		return "",err
 	}
 
@@ -311,7 +316,12 @@ func Verify404Vaild(response *http.Response, text string, context *Context) (str
 func GetHtml(response *http.Response, text string, context *Context) (string,error) {
 	return text,nil
 }
-
+func is_error_request(err error) bool {
+	if strings.Contains(err.Error(),"EOF") {
+		return true
+	}
+	return false
+}
 
 func S(vargs []interface{}) {
 	var url string
@@ -356,7 +366,7 @@ func deepCopy(s string) string {
 	return sb.String()
 }
 
-func UrlSearch(url_string string, wordlist string, regexString string, sim_level int, depth int, rate int,key_string string) {
+func UrlSearch(url_string string, wordlist string, regexString string, sim_level int, depth int, rate int,key_string string,time_out int,count_error int) {
 
 	//Inialize Every UrlSearch's Vaule
 	global_context := UrlSearchContext{}
@@ -368,6 +378,7 @@ func UrlSearch(url_string string, wordlist string, regexString string, sim_level
 	global_context.string_set = make(map[string]bool)
 	global_context.last_send_status = nil
 	global_context.send_lock = &sync.Mutex{}
+	global_context.count_error = count_error
 	//Initialize context value
 	context := Context{}
 	context.notfound_difference_ratio = 1.0
@@ -450,6 +461,12 @@ func UrlSearch(url_string string, wordlist string, regexString string, sim_level
 			vargs = append(vargs, new_url_string, nil, nil, ProcFunction, context)
 			bar.Increment()
 			pool.RunTask(S,vargs)
+
+			if (global_context.quit) {
+				print_info("Too many error requests.Stop the requests' sequence")
+				//pool.WaitTask()
+				return
+			}
 		}
 		bar.Finish()
 		pool.WaitTask()
@@ -471,6 +488,8 @@ func main() {
 	depth := flag.Int("d",1,"How depth of url need to search(default 1)")
 	rate := flag.Int("rate",5,"how fast the search(default 5)")
 	key_string := flag.String("key_string","","")
+	time_out := flag.Int("time_out",10,"Request timeout")
+	count_error := flag.Int("count_error",100,"If too many error,then stop the fuzz")
 	flag.Parse()
 	if *url_string == "" && *url_file == "" {
 		print_usage("Must set the url")
@@ -482,7 +501,7 @@ func main() {
 		return
 	}
 	if *url_string != "" {
-		UrlSearch(*url_string, *wordlist, *regex_string, *sim_level, *depth, *rate,*key_string)
+		UrlSearch(*url_string, *wordlist, *regex_string, *sim_level, *depth, *rate,*key_string,*time_out,*count_error)
 	} else if *url_file !=""{
 		urllist_file, err := os.Open(*url_file)
 		if err != nil {
@@ -499,7 +518,7 @@ func main() {
 		urllist_file.Close()
 
 		for i:=0;i < len(url_list);i++ {
-			UrlSearch(url_list[i],*wordlist,*regex_string,*sim_level,*depth,*rate,*key_string)
+			UrlSearch(url_list[i],*wordlist,*regex_string,*sim_level,*depth,*rate,*key_string,*time_out,*count_error)
 		}
 	}
 
