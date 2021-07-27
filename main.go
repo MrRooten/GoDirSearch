@@ -179,10 +179,12 @@ func (dir *DirTree) GetPathStringList() []string {
 func SendRequest(url string, cookie *http.Cookie, header *http.Header, handler HttpHandler, context Context) (string,error) {
 
 	context.global_context.send_lock.Lock()
+	timeout := time.Second * time.Duration(context.global_context.time_out)
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
+		Timeout: timeout,
 	}
 	request, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -379,6 +381,7 @@ func UrlSearch(url_string string, wordlist string, regexString string, sim_level
 	global_context.last_send_status = nil
 	global_context.send_lock = &sync.Mutex{}
 	global_context.count_error = count_error
+	global_context.time_out = time_out
 	//Initialize context value
 	context := Context{}
 	context.notfound_difference_ratio = 1.0
