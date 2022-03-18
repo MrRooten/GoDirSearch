@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -38,34 +39,34 @@ func blue(str string) string {
 func green(str string) string {
 	return "\033[1;32m"+str+"\033[39m"
 }
-func print_usage(help_message string) {
-	fmt.Println(help_message)
+func printUsage(helpMessage string) {
+	fmt.Println(helpMessage)
 }
-func print_error(error_message string,err error) {
-	fmt.Println(red("[Error]:")+error_message)
+func printError(errorMessage string,err error) {
+	fmt.Println(red("[Error]:")+ errorMessage)
 	if err != nil {
 		fmt.Println("    " + err.Error())
 	}
 }
 
-func print_info(info_message string) {
+func printInfo(info_message string) {
 	fmt.Println(green("[Info]:")+info_message)
 }
 
-func print_found(found_message string,response *http.Response,size int) {
-	status_code := "["+strconv.Itoa(response.StatusCode)+"] "
+func printFound(foundMessage string,response *http.Response,size int) {
+	statusCode := "["+strconv.Itoa(response.StatusCode)+"] "
 
 	if strconv.Itoa(response.StatusCode)[0] == "4"[0] {
-		status_code = red(status_code)
-	} else if (strconv.Itoa(response.StatusCode)[0] == "3"[0]) {
-		status_code = green(status_code)
-	} else if (strconv.Itoa(response.StatusCode)[0] == "2"[0]) {
-		status_code = blue(status_code)
+		statusCode = red(statusCode)
+	} else if strconv.Itoa(response.StatusCode)[0] == "3"[0] {
+		statusCode = green(statusCode)
+	} else if strconv.Itoa(response.StatusCode)[0] == "2"[0] {
+		statusCode = blue(statusCode)
 	}
 
 
-	res :=  found_message
-	res += "\n  " + blue("Status Code: ") + status_code
+	res := foundMessage
+	res += "\n  " + blue("Status Code: ") + statusCode
 	res += "\n  " + blue("Size: ") + green(strconv.Itoa(size)) + red(" bytes")
 	if response.Header.Get("Location") != "" {
 		res += "\n  " + blue("Redirect to -> ") + response.Header.Get("Location")
@@ -115,32 +116,33 @@ func GetDifferenceRatio(s1 string, s2 string) float64 {
 }
 
 type Context struct {
-	is_404_verify             bool
-	regexString               string
-	similarity_level          int
-	notfound_difference_ratio float64
-	error_page                string
-	cur_tree                  *DirTree
-	cur_name                  string
-	pool               		  *poollib.GoroutinePool
-	global_context			  *UrlSearchContext
-	key_string                string
-	tree_lock				  *sync.Mutex
+	statusCode				string
+	is404Verify             bool
+	regexString             string
+	similarityLevel         int
+	notfoundDifferenceRatio float64
+	errorPage               string
+	curTree                 *DirTree
+	curName                 string
+	pool                    *poollib.GoroutinePool
+	globalContext           *UrlSearchContext
+	keyString               string
+	treeLock                *sync.Mutex
 }
 
 type UrlSearchContext struct {
-	handlerLock 		      *sync.Mutex
-	dir_queue 				  *DirQueue
-	dir_queue_save 			  *DirQueue
-	dummy_tree 				  *DirTree
-	root_node 				  *DirTree
-	string_set 				  map[string]bool
-	send_lock				  *sync.Mutex
-	last_send_status		  error
-	cur_count_error			  int
-	count_error			      int
-	time_out                  int
-	quit  				      bool //Set quit flag
+	handlerLock    *sync.Mutex
+	dirQueue       *DirQueue
+	dirQueueSave   *DirQueue
+	dummyTree      *DirTree
+	rootNode       *DirTree
+	stringSet      map[string]bool
+	sendLock       *sync.Mutex
+	lastSendStatus error
+	curCountError  int
+	countError     int
+	timeOut        int
+	quit           bool //Set quit flag
 }
 type DirTree struct {
 	name     string
@@ -161,7 +163,8 @@ func (dir *DirTree) AddTreeByName(name string) *DirTree {
 	dir.subtrees = append(dir.subtrees, &tree)
 	return &tree
 }
-//Return the
+
+// GetPathStringList Return the
 func (dir *DirTree) GetPathStringList() []string {
 	var curNode *DirTree
 	var dirList []string
@@ -173,15 +176,18 @@ func (dir *DirTree) GetPathStringList() []string {
 	for i := len(dirList) - 1; i >= 0; i-- {
 		reverseDirList = append(reverseDirList, dirList[i])
 	}
+	if reverseDirList == nil {
+		return []string{}
+	}
 	return reverseDirList[1:]
 }
 
 
 
 func SendRequest(url string, cookie *http.Cookie, header *http.Header, handler HttpHandler, context Context) (string,error) {
-
-	context.global_context.send_lock.Lock()
-	timeout := time.Second * time.Duration(context.global_context.time_out)
+	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	context.globalContext.sendLock.Lock()
+	timeout := time.Second * time.Duration(context.globalContext.timeOut)
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -189,10 +195,12 @@ func SendRequest(url string, cookie *http.Cookie, header *http.Header, handler H
 		Timeout: timeout,
 	}
 	request, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		printError("Can not get a new request",err)
+	}
 	request.Header.Add("Accept-Encoding", "identity")
 	if err != nil {
-		print_error("Can not get a new request",err)
-		return "",err
+		printError("Can not get a new request",err)
 	}
 
 
@@ -203,25 +211,24 @@ func SendRequest(url string, cookie *http.Cookie, header *http.Header, handler H
 	if header != nil {
 		request.Header = *header
 	}
-	context.global_context.send_lock.Unlock()
+	context.globalContext.sendLock.Unlock()
 	response, err := client.Do(request)
 	if err != nil {
-		print_error("Can not send the request to the server",err)
-
+		printError("Can not send the request to the server", err)
 		return "",err
 	}
-	limit_reader := io.LimitReader(response.Body,1024*1024)
-	text,err := ioutil.ReadAll(limit_reader)
+	limitReader := io.LimitReader(response.Body,1024*1024)
+	text,err := ioutil.ReadAll(limitReader)
 	if err != nil {
-		print_error("Can not read the IO from the response's body",err)
+		printError("Can not read the IO from the response's body",err)
 		return "",err
 	}
-	context.global_context.handlerLock.Lock()
+	context.globalContext.handlerLock.Lock()
 	result,err := handler(response, string(text), &context)
 	if result == FALSE {
-		print_error("Error happened:",err)
+		printError("Error happened:",err)
 	}
-	context.global_context.handlerLock.Unlock()
+	context.globalContext.handlerLock.Unlock()
 	return result,nil
 }
 
@@ -237,7 +244,19 @@ func ProcHandler(response *http.Response, text string, context *Context) (string
 		return TRUE,errors.New("Not found page")
 	}
 
+	statusCode := context.statusCode
+	codeList := strings.Split(statusCode,",")
 
+	for _,code := range codeList {
+		notFoundCode,err := strconv.Atoi(code)
+
+		if err != nil {
+			printError("Not a valid code",err)
+		}
+		if response.StatusCode == notFoundCode {
+			return TRUE,errors.New("")
+		}
+	}
 	if context.regexString != "" {
 		matched, err := regexp.Match(context.regexString, []byte(text))
 		if err != nil {
@@ -249,14 +268,14 @@ func ProcHandler(response *http.Response, text string, context *Context) (string
 		}
 	}
 
-	if context.key_string != "" {
-		if strings.Contains(text,context.key_string) {
+	if context.keyString != "" {
+		if strings.Contains(text,context.keyString) {
 			return TRUE,errors.New("Key string not found page")
 		}
 	}
-	if context.similarity_level > 0 {
-		difference_ratio := GetDifferenceRatio(text, context.error_page)
-		if difference_ratio >= context.notfound_difference_ratio {
+	if context.similarityLevel > 0 {
+		differenceRatio := GetDifferenceRatio(text, context.errorPage)
+		if differenceRatio >= context.notfoundDifferenceRatio {
 			return TRUE,errors.New("Similarity with error page")
 		}
 	}
@@ -264,12 +283,12 @@ func ProcHandler(response *http.Response, text string, context *Context) (string
 	//Else stores in the strings_set and save to the dir tree
 	if strconv.Itoa(response.StatusCode)[0] == "3"[0] {
 		location := response.Header.Get("location")
-		if context.global_context.string_set[location] == true {
+		if context.globalContext.stringSet[location] == true {
 			return TRUE,errors.New("Too many redirect to this url")
 		} else {
 			//This path is different with the default type
 			//So this dir add type has it's own way
-			context.global_context.string_set[location] = true
+			context.globalContext.stringSet[location] = true
 		}
 	}
 
@@ -277,44 +296,44 @@ func ProcHandler(response *http.Response, text string, context *Context) (string
 	//So I use a new way to save to the dir tree
 
 	//End of new way
-	cur_node := context.cur_tree
-	found_url := response.Request.URL
-	var add_node *DirTree
-	if found_url.RawQuery == "" {
+	curNode := context.curTree
+	foundUrl := response.Request.URL
+	var addNode *DirTree
+	if foundUrl.RawQuery == "" {
 
-		print_found(found_url.String(), response, len(text))
-		add_node = cur_node.AddTreeByName(context.cur_name)
-		*context.global_context.dir_queue_save = append(*context.global_context.dir_queue_save, add_node)
+		printFound(foundUrl.String(), response, len(text))
+		addNode = curNode.AddTreeByName(context.curName)
+		*context.globalContext.dirQueueSave = append(*context.globalContext.dirQueueSave, addNode)
 	} else {
-		path := found_url.Path
+		path := foundUrl.Path
 		//If the url is like http://google.com not like http://google.com/
 		if path == "" {
 			path = "/"
 		}
 
 		filename := path[strings.LastIndex(path,"/")+1:]
-		add_node = cur_node.AddTreeByName(filename)
-		add_node.query = found_url.RawQuery
-		print_found(found_url.String(),response, len(text))
+		addNode = curNode.AddTreeByName(filename)
+		addNode.query = foundUrl.RawQuery
+		printFound(foundUrl.String(),response, len(text))
 	}
 	return TRUE,nil
 }
 
-//SendRequest's callback function that verify the 404 status code is vaild for not found page or not
+// Verify404Vaild SendRequest's callback function that verify the 404 status code is vaild for not found page or not
 func Verify404Vaild(response *http.Response, text string, context *Context) (string,error) {
 	if response.StatusCode == 404 {
-		context.is_404_verify = true
+		context.is404Verify = true
 		return TRUE,nil
 	}
-	context.is_404_verify = false
+	context.is404Verify = false
 	return TRUE,nil
 }
 
-//SendRequest's callback function that get the html text as string
+// GetHtml SendRequest's callback function that get the html text as string
 func GetHtml(response *http.Response, text string, context *Context) (string,error) {
 	return text,nil
 }
-func is_error_request(err error) bool {
+func isErrorRequest(err error) bool {
 	if err == io.EOF {
 		return true
 	}
@@ -329,41 +348,41 @@ func S(vargs []interface{}) {
 	var context Context
 
 	for i,_:=range vargs {
-		if (i == 0) {
+		if i == 0 {
 			url = vargs[i].(string)
-		} else if (i == 1) {
+		} else if i == 1 {
 			if vargs[i] == nil {
 				cookie = nil
 			} else {
 				cookie = vargs[i].(*http.Cookie)
 			}
-		} else if (i == 2) {
+		} else if i == 2 {
 			if vargs[i] == nil {
 				header = nil
 			} else {
 				header = vargs[i].(*http.Header)
 			}
-		} else if (i == 3) {
+		} else if i == 3 {
 			handler = vargs[i].(HttpHandler)
-		} else if (i == 4) {
+		} else if i == 4 {
 			context = vargs[i].(Context)
 		}
 	}
 	_,err := SendRequest(url, cookie,header, handler, context)
-	context.global_context.send_lock.Lock()
+	context.globalContext.sendLock.Lock()
 	if err != nil {
-		context.global_context.last_send_status = err
-		if is_error_request(err) {
-			context.global_context.cur_count_error += 1
+		context.globalContext.lastSendStatus = err
+		if isErrorRequest(err) {
+			context.globalContext.curCountError += 1
 		}
 
-		if context.global_context.cur_count_error > context.global_context.count_error {
-			context.global_context.quit = true
+		if context.globalContext.curCountError > context.globalContext.countError {
+			context.globalContext.quit = true
 		}
 	} else {
-		context.global_context.cur_count_error = 0
+		context.globalContext.curCountError = 0
 	}
-	context.global_context.send_lock.Unlock()
+	context.globalContext.sendLock.Unlock()
 }
 
 func deepCopy(s string) string {
@@ -372,112 +391,136 @@ func deepCopy(s string) string {
 	return sb.String()
 }
 
-func UrlSearch(url_string string, wordlist string, regexString string, sim_level int, depth int, rate int,key_string string,time_out int,count_error int) {
+type Params struct {
+	urlString string
+	wordlist string
+	regexString string
+	simLevel int
+	depth int
+	rate int
+	keyString string
+	timeOut int
+	countError int
+	statusCode string
+}
+func UrlSearch(params *Params) {
 
 	//Inialize Every UrlSearch's Vaule
-	global_context := UrlSearchContext{}
-	global_context.dir_queue = new(DirQueue)
-	global_context.dir_queue_save = new(DirQueue)
-	global_context.handlerLock = &sync.Mutex{}
-	global_context.root_node = new(DirTree)
-	global_context.dummy_tree = new(DirTree)
-	global_context.string_set = make(map[string]bool)
-	global_context.last_send_status = nil
-	global_context.send_lock = &sync.Mutex{}
-	global_context.count_error = count_error
-	global_context.time_out = time_out
+	urlString := params.urlString
+	wordlist := params.wordlist
+	regexString := params.regexString
+	simLevel := params.simLevel
+	depth := params.depth
+	rate := params.rate
+	keyString := params.keyString
+	timeOut := params.timeOut
+	countError := params.countError
+	statusCode := params.statusCode
+	globalContext := UrlSearchContext{}
+	globalContext.dirQueue = new(DirQueue)
+	globalContext.dirQueueSave = new(DirQueue)
+	globalContext.handlerLock = &sync.Mutex{}
+	globalContext.rootNode = new(DirTree)
+	globalContext.dummyTree = new(DirTree)
+	globalContext.stringSet = make(map[string]bool)
+	globalContext.lastSendStatus = nil
+	globalContext.sendLock = &sync.Mutex{}
+	globalContext.countError = countError
+	globalContext.timeOut = timeOut
 	//Initialize context value
 	context := Context{}
-	context.notfound_difference_ratio = 1.0
-	context.global_context = &global_context
-	context.tree_lock = new(sync.Mutex)
-	url_string = strings.Trim(url_string," ")
+	context.notfoundDifferenceRatio = 1.0
+	context.globalContext = &globalContext
+	context.treeLock = new(sync.Mutex)
+	context.statusCode = statusCode
+	urlString = strings.Trim(urlString," ")
 
 	//http://test.com/ -> http://test.com
-	if strings.HasSuffix(url_string,"/") {
-		url_string = url_string[:len(url_string)-1]
+	if strings.HasSuffix(urlString,"/") {
+		urlString = urlString[:len(urlString)-1]
 	}
 
 	//Verify the 404 signature is valid or not
-	context.is_404_verify = false
-	_,err := SendRequest(url_string+"/"+GenerateRandomString(16), nil, nil, Verify404Vaild, context)
+	context.is404Verify = false
+	_,err := SendRequest(urlString+"/"+GenerateRandomString(16), nil, nil, Verify404Vaild, context)
 	if err != nil {
-		print_error("Can not get the not found page",err)
+		printError("Can not get the not found page",err)
 		return 
 	}
 
-	context.key_string = key_string
+	context.keyString = keyString
 	context.regexString = regexString
-	context.similarity_level = sim_level
+	context.similarityLevel = simLevel
 
 	//Get the two non-exist page's difference ratio
-	page404_1,err := SendRequest(url_string+"/"+GenerateRandomString(16), nil, nil, GetHtml, context)
-	context.error_page = page404_1
-	for i := 0; i < sim_level*3; i++ {
-		page404_2,err := SendRequest(url_string+ "/" + GenerateRandomString(16), nil, nil, GetHtml, context,)
+	page404_1,err := SendRequest(urlString+"/"+GenerateRandomString(16), nil, nil, GetHtml, context)
+	context.errorPage = page404_1
+	for i := 0; i < simLevel*3; i++ {
+		page404_2,err := SendRequest(urlString+ "/" + GenerateRandomString(16), nil, nil, GetHtml, context,)
 		if err != nil {
-			print_error("Can not get the not found page",err)
+			printError("Can not get the not found page", err)
+
 		}
-		context.notfound_difference_ratio = min(GetDifferenceRatio(page404_1, page404_2), context.notfound_difference_ratio)
+		context.notfoundDifferenceRatio = min(GetDifferenceRatio(page404_1, page404_2), context.notfoundDifferenceRatio)
 	}
 
 	//Start enumerate the wordlist to get the page is found or not found
-	wordlist_file, err := os.Open(wordlist)
+	wordlistFile, err := os.Open(wordlist)
 	if err != nil {
-		print_error("Read file error",err)
+		printError("Read file error",err)
 	}
 
-	scanner := bufio.NewScanner(wordlist_file)
+	scanner := bufio.NewScanner(wordlistFile)
 	scanner.Split(bufio.ScanLines)
 
-	var filename_list []string
+	var filenameList []string
 	for scanner.Scan() {
-		filename_list = append(filename_list, scanner.Text())
+		filenameList = append(filenameList, scanner.Text())
 	}
-	wordlist_file.Close()
+	wordlistFile.Close()
 
 	//Register a GoroutinePool
 	pool := poollib.GoroutinePool{}
 	pool.NewGoroutinePool(rate)
 
 	//Build the directory tree
-	global_context.root_node.name = "/"
-	global_context.root_node.parent = global_context.dummy_tree
-	global_context.dummy_tree.AddTree(global_context.root_node)
+	globalContext.rootNode.name = "/"
+	globalContext.rootNode.parent = globalContext.dummyTree
+	globalContext.dummyTree.AddTree(globalContext.rootNode)
 
 	//Queue for wide first search in tree.Two queues are for know the depth
-	global_context.dir_queue = new(DirQueue)
-	global_context.dir_queue_save = new(DirQueue)
+	globalContext.dirQueue = new(DirQueue)
+	globalContext.dirQueueSave = new(DirQueue)
 
 	//The current search depth
 	dp := 0
 
-	*global_context.dir_queue = append(*global_context.dir_queue,global_context.root_node)
-	for len(*global_context.dir_queue) != 0 && dp != depth {
-		cur_node := (*global_context.dir_queue)[0]
-		*global_context.dir_queue = (*global_context.dir_queue)[1:]
-		context.cur_tree = cur_node
+	*globalContext.dirQueue = append(*globalContext.dirQueue, globalContext.rootNode)
+	for len(*globalContext.dirQueue) != 0 && dp != depth {
+		curNode := (*globalContext.dirQueue)[0]
+		*globalContext.dirQueue = (*globalContext.dirQueue)[1:]
+		context.curTree = curNode
 		locker := sync.Mutex{}
-		bar := pb.StartNew(len(filename_list))
+		bar := pb.StartNew(len(filenameList))
 
 		//last_time := time.Now()
-		for i_dir_name:=0;i_dir_name<len(filename_list);i_dir_name++ {
+		for iDirName :=0; iDirName <len(filenameList); iDirName++ {
 			locker.Lock()
-			context.cur_name = filename_list[i_dir_name]
+			context.curName = filenameList[iDirName]
 			var vargs []interface{}
 			var ProcFunction HttpHandler
 			ProcFunction = ProcHandler
-			request_url_string := url_string + "/" +strings.Join(append(cur_node.GetPathStringList()[:],filename_list[i_dir_name]),"/")
-			new_url_string := deepCopy(request_url_string)
+			requestUrlString := urlString + "/" +strings.Join(append(curNode.GetPathStringList()[:], filenameList[iDirName]),"/")
+			newUrlString := deepCopy(requestUrlString)
 			locker.Unlock()
-			vargs = append(vargs, new_url_string, nil, nil, ProcFunction, context)
+			vargs = append(vargs, newUrlString, nil, nil, ProcFunction, context)
 			//ptimes :=  (int64(time.Millisecond)* 1000)/( time.Now().UnixNano() - last_time.UnixNano())
 			//last_time = time.Now()
 			bar.Add(1)
 			pool.RunTask(S,vargs)
 			//fmt.Printf(blue("\r  (%d/%d) ")+green("%d ")+red("p/s"), i_dir_name,len(filename_list),ptimes)
-			if (global_context.quit) {
-				print_info("Too many error requests.Stop the requests' sequence")
+			if globalContext.quit {
+				printInfo("Too many error requests.Stop the requests' sequence")
 				//pool.WaitTask()
 				return
 			}
@@ -485,56 +528,52 @@ func UrlSearch(url_string string, wordlist string, regexString string, sim_level
 		}
 		bar.Finish()
 		pool.WaitTask()
-		if len(*global_context.dir_queue) == 0 {
+		if len(*globalContext.dirQueue) == 0 {
 			dp += 1
-			global_context.dir_queue, global_context.dir_queue_save = global_context.dir_queue_save, global_context.dir_queue
+			globalContext.dirQueue, globalContext.dirQueueSave = globalContext.dirQueueSave, globalContext.dirQueue
 		}
 	}
 }
 
 func main() {
-	url_string := flag.String("u","","Set the url you need to buster")
+	urlString := flag.String("u","","Set the url you need to buster")
 
-	url_file := flag.String("url_file","","Url file")
+	urlFile := flag.String("url_file","","Url file")
 	wordlist := flag.String("w","","The wordlst")
 
-	sim_level := flag.Int("s",1,"Similarity of error page leve(default 1)")
-	regex_string := flag.String("r","","Regex String of Error page(default \"\")")
+	simLevel := flag.Int("similarity",1,"Similarity of error page leve(default 1)")
+	regexString := flag.String("regex","","Regex String of Error page(default \"\")")
 	depth := flag.Int("d",1,"How depth of url need to search(default 1)")
 	rate := flag.Int("rate",5,"how fast the search(default 5)")
-	key_string := flag.String("key_string","","")
-	time_out := flag.Int("time_out",10,"Request timeout")
-	count_error := flag.Int("count_error",100,"If too many error,then stop the fuzz")
+	keyString := flag.String("key_string","","")
+	timeOut := flag.Int("time_out",10,"Request timeout")
+	countError := flag.Int("count_error",100,"If too many error,then stop the fuzz")
+	statusCode := flag.String("exclude_code","404,429","Exclude status code")
 	flag.Parse()
-	if *url_string == "" && *url_file == "" {
-		print_usage("Must set the url")
+	if *urlString == "" && *urlFile == "" {
+		printUsage("Must set the url")
+		flag.Usage()
 		return
 	}
 
 	if *wordlist == "" {
-		print_usage("Must set the wordlist")
+		printUsage("Must set the wordlist")
 		return
 	}
-	if *url_string != "" {
-		UrlSearch(*url_string, *wordlist, *regex_string, *sim_level, *depth, *rate,*key_string,*time_out,*count_error)
-	} else if *url_file !=""{
-		urllist_file, err := os.Open(*url_file)
-		if err != nil {
-			print_error("Read file error",err)
-		}
-
-		scanner := bufio.NewScanner(urllist_file)
-		scanner.Split(bufio.ScanLines)
-
-		var url_list []string
-		for scanner.Scan() {
-			url_list = append(url_list, scanner.Text())
-		}
-		urllist_file.Close()
-
-		for i:=0;i < len(url_list);i++ {
-			UrlSearch(url_list[i],*wordlist,*regex_string,*sim_level,*depth,*rate,*key_string,*time_out,*count_error)
-		}
+	params := Params{
+		urlString: *urlString,
+		wordlist: *wordlist,
+		regexString: *regexString,
+		simLevel: *simLevel,
+		depth: *depth,
+		rate: *rate,
+		keyString: *keyString,
+		timeOut: *timeOut,
+		countError: *countError,
+		statusCode: *statusCode,
+	}
+	if *urlString != "" {
+		UrlSearch(&params)
 	}
 
 	//UrlSearch("http://zhihu.com",".\\test_wordlist.txt","",1,1,1)
