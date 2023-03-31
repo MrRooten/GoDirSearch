@@ -1,5 +1,5 @@
 # GoDirSearch
-Search Web found dir written in  golang with Similarity compare and normal not found pattern
+Search Web found dir written in  golang with Similarity compare and normally not found pattern
 
 ``go build``  
 
